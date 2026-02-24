@@ -2,76 +2,71 @@ name: CI workflow
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  build:
+  ci:
+    name: Lint & Unit Tests
     runs-on: ubuntu-latest
 
     container:
       image: python:3.9-slim
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint
+        run: |
+          pip install flake8
+          flake8 . --max-line-length=120
+
+      - name: Unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          pip install pytest
+          pytest -q
+
+  docker-image:
+    name: Build & Push Image (main only)
+    needs: ci
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}
 
     steps:
-      # 1️⃣ Checkout Code
       - name: Checkout
         uses: actions/checkout@v3
 
-      # 2️⃣ Install Dependencies
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      # 3️⃣ Lint Code
-      - name: Lint with flake8
-        run: |
-          flake8 service --count --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 service --count --max-complexity=10 --max-line-length=127 --statistics
-
-      # 4️⃣ Run unit tests with nose
-      - name: Run Tests
-        run: |
-          nosetests -v --with-spec --spec-color --with-coverage --cover-package=app
-
-      # 5️⃣ Set Image Tags
-      - name: Set Image Tags
+      - name: Set image tags
         id: meta
         run: |
           echo "sha_tag=${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA}" >> $GITHUB_OUTPUT
           echo "latest_tag=${REGISTRY}/${IMAGE_NAME}:latest" >> $GITHUB_OUTPUT
 
-      # 6️⃣ Login to GitHub Container Registry (only on main push)
       - name: Login to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 7️⃣ Build Docker Image
-      - name: Build Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          tags: |
-            ${{ steps.meta.outputs.sha_tag }}
-            ${{ steps.meta.outputs.latest_tag }}
-
-      # 8️⃣ Push Image (only on main branch)
-      - name: Push Image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
