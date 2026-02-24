@@ -1,0 +1,140 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: python-lint
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: lint
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        set -e
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8
+        flake8 . --max-line-length=120
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: python-tests
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: tests
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        set -e
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+        # Install the project so imports like "from service..." work
+        pip install -e .
+
+        pip install pytest
+        pytest -q
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: buildah-build-and-push
+spec:
+  params:
+    - name: image
+      type: string
+    - name: tlsVerify
+      type: string
+      default: "false"
+  workspaces:
+    - name: source
+  steps:
+    - name: build-and-push
+      image: quay.io/buildah/stable:v1.36.0
+      securityContext:
+        privileged: true
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        set -e
+        echo "Building image: $(params.image)"
+        buildah bud --tls-verify=$(params.tlsVerify) -t $(params.image) -f Dockerfile .
+        echo "Pushing image: $(params.image)"
+        buildah push --tls-verify=$(params.tlsVerify) $(params.image) docker://$(params.image)
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: oc-deploy
+spec:
+  params:
+    - name: namespace
+      type: string
+    - name: app
+      type: string
+      default: ci-cd-final-project
+    - name: image
+      type: string
+    - name: port
+      type: string
+      default: "8080"
+  steps:
+    - name: deploy
+      image: quay.io/openshift/origin-cli:4.15
+      script: |
+        #!/bin/sh
+        set -e
+
+        oc project $(params.namespace)
+
+        # Create/Update Deployment + Service
+        oc apply -f - <<EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: $(params.app)
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: $(params.app)
+          template:
+            metadata:
+              labels:
+                app: $(params.app)
+            spec:
+              containers:
+              - name: $(params.app)
+                image: $(params.image)
+                ports:
+                - containerPort: $(params.port)
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: $(params.app)
+        spec:
+          selector:
+            app: $(params.app)
+          ports:
+          - name: http
+            port: 80
+            targetPort: $(params.port)
+        EOF
+
+        # Create Route (ignore error if it already exists)
+        oc expose svc/$(params.app) || true
+
+        # Wait for rollout
+        oc rollout status deployment/$(params.app) -n $(params.namespace) --timeout=180s
+
+        echo "Route host:"
+        oc get route $(params.app) -n $(params.namespace) -o jsonpath='{.spec.host}{"\n"}'

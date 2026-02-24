@@ -1,0 +1,81 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: ci-cd-final-project-pipeline
+spec:
+  params:
+    - name: repoUrl
+      type: string
+    - name: revision
+      type: string
+      default: main
+    - name: namespace
+      type: string
+    - name: app
+      type: string
+      default: ci-cd-final-project
+    - name: image
+      type: string
+    - name: port
+      type: string
+      default: "8080"
+
+  workspaces:
+    - name: shared-workspace
+
+  tasks:
+    - name: clone
+      taskRef:
+        kind: ClusterTask
+        name: git-clone
+      params:
+        - name: url
+          value: $(params.repoUrl)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+
+    - name: lint
+      runAfter: ["clone"]
+      taskRef:
+        name: python-lint
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: tests
+      runAfter: ["lint"]
+      taskRef:
+        name: python-tests
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: build
+      runAfter: ["tests"]
+      taskRef:
+        name: buildah-build-and-push
+      params:
+        - name: image
+          value: $(params.image)
+        - name: tlsVerify
+          value: "false"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: deploy
+      runAfter: ["build"]
+      taskRef:
+        name: oc-deploy
+      params:
+        - name: namespace
+          value: $(params.namespace)
+        - name: app
+          value: $(params.app)
+        - name: image
+          value: $(params.image)
+        - name: port
+          value: $(params.port)
