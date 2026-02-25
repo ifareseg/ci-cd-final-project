@@ -1,12 +1,55 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: python-lint
+  name: cleanup
 spec:
   workspaces:
     - name: source
   steps:
-    - name: lint
+    - name: cleanup
+      image: alpine:3.20
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        set -e
+        echo "Cleaning workspace..."
+        rm -rf ./* ./.??* || true
+        echo "Cleanup done."
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: git-clone
+spec:
+  params:
+    - name: url
+      type: string
+    - name: revision
+      type: string
+      default: main
+  workspaces:
+    - name: source
+  steps:
+    - name: git-clone
+      image: alpine/git:2.45.2
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        set -e
+        git clone $(params.url) .
+        git checkout $(params.revision)
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: flake8
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: flake8
       image: python:3.9-slim
       workingDir: $(workspaces.source.path)
       script: |
@@ -21,12 +64,12 @@ spec:
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: python-tests
+  name: nose
 spec:
   workspaces:
     - name: source
   steps:
-    - name: tests
+    - name: nose
       image: python:3.9-slim
       workingDir: $(workspaces.source.path)
       script: |
@@ -34,18 +77,13 @@ spec:
         set -e
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-
-        # Install the project so imports like "from service..." work
-        pip install -e .
-
-        pip install pytest
-        pytest -q
+        nosetests -v --with-spec --spec-color
 
 ---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: buildah-build-and-push
+  name: buildah
 spec:
   params:
     - name: image
@@ -56,7 +94,7 @@ spec:
   workspaces:
     - name: source
   steps:
-    - name: build-and-push
+    - name: buildah
       image: quay.io/buildah/stable:v1.36.0
       securityContext:
         privileged: true
@@ -64,38 +102,33 @@ spec:
       script: |
         #!/bin/sh
         set -e
-        echo "Building image: $(params.image)"
         buildah bud --tls-verify=$(params.tlsVerify) -t $(params.image) -f Dockerfile .
-        echo "Pushing image: $(params.image)"
         buildah push --tls-verify=$(params.tlsVerify) $(params.image) docker://$(params.image)
 
 ---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: oc-deploy
+  name: openshift-client
 spec:
   params:
     - name: namespace
       type: string
     - name: app
       type: string
-      default: ci-cd-final-project
     - name: image
       type: string
     - name: port
       type: string
-      default: "8080"
+      default: "8000"
   steps:
     - name: deploy
       image: quay.io/openshift/origin-cli:4.15
       script: |
         #!/bin/sh
         set -e
-
         oc project $(params.namespace)
 
-        # Create/Update Deployment + Service
         oc apply -f - <<EOF
         apiVersion: apps/v1
         kind: Deployment
@@ -114,6 +147,9 @@ spec:
               containers:
               - name: $(params.app)
                 image: $(params.image)
+                env:
+                - name: PORT
+                  value: "$(params.port)"
                 ports:
                 - containerPort: $(params.port)
         ---
@@ -130,11 +166,6 @@ spec:
             targetPort: $(params.port)
         EOF
 
-        # Create Route (ignore error if it already exists)
         oc expose svc/$(params.app) || true
-
-        # Wait for rollout
         oc rollout status deployment/$(params.app) -n $(params.namespace) --timeout=180s
-
-        echo "Route host:"
         oc get route $(params.app) -n $(params.namespace) -o jsonpath='{.spec.host}{"\n"}'
