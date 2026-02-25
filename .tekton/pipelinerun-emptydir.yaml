@@ -1,0 +1,23 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: ci-cd-final-project-run-
+spec:
+  pipelineRef:
+    name: ci-cd-final-project-pipeline
+  params:
+    - name: repoUrl
+      value: https://github.com/ifareseg/ci-cd-final-project.git
+    - name: revision
+      value: main
+    - name: namespace
+      value: sn-labs-eslamalfi2
+    - name: app
+      value: ci-cd-final-project
+    - name: image
+      value: image-registry.openshift-image-registry.svc:5000/sn-labs-eslamalfi2/ci-cd-final-project:latest
+    - name: port
+      value: "8000"
+  workspaces:
+    - name: shared-workspace
+      emptyDir: {}
