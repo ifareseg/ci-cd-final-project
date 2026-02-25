@@ -18,15 +18,22 @@ spec:
       type: string
     - name: port
       type: string
-      default: "8080"
+      default: "8000"
 
   workspaces:
     - name: shared-workspace
 
   tasks:
-    - name: clone
+    - name: cleanup
       taskRef:
-        kind: ClusterTask
+        name: cleanup
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: git-clone
+      runAfter: ["cleanup"]
+      taskRef:
         name: git-clone
       params:
         - name: url
@@ -34,29 +41,29 @@ spec:
         - name: revision
           value: $(params.revision)
       workspaces:
-        - name: output
+        - name: source
           workspace: shared-workspace
 
-    - name: lint
-      runAfter: ["clone"]
+    - name: flake8
+      runAfter: ["git-clone"]
       taskRef:
-        name: python-lint
+        name: flake8
       workspaces:
         - name: source
           workspace: shared-workspace
 
-    - name: tests
-      runAfter: ["lint"]
+    - name: nose
+      runAfter: ["flake8"]
       taskRef:
-        name: python-tests
+        name: nose
       workspaces:
         - name: source
           workspace: shared-workspace
 
-    - name: build
-      runAfter: ["tests"]
+    - name: buildah
+      runAfter: ["nose"]
       taskRef:
-        name: buildah-build-and-push
+        name: buildah
       params:
         - name: image
           value: $(params.image)
@@ -67,9 +74,9 @@ spec:
           workspace: shared-workspace
 
     - name: deploy
-      runAfter: ["build"]
+      runAfter: ["buildah"]
       taskRef:
-        name: oc-deploy
+        name: openshift-client
       params:
         - name: namespace
           value: $(params.namespace)
@@ -79,3 +86,6 @@ spec:
           value: $(params.image)
         - name: port
           value: $(params.port)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
