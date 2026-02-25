@@ -86,6 +86,3 @@ spec:
           value: $(params.image)
         - name: port
           value: $(params.port)
-      workspaces:
-        - name: source
-          workspace: shared-workspace

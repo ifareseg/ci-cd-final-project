@@ -37,8 +37,10 @@ spec:
       script: |
         #!/bin/sh
         set -e
+        echo "Cloning repo..."
         git clone $(params.url) .
         git checkout $(params.revision)
+        echo "Clone complete."
 
 ---
 apiVersion: tekton.dev/v1
@@ -77,7 +79,9 @@ spec:
         set -e
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        nosetests -v --with-spec --spec-color
+        # nose موجود في requirements.txt، بس بنثبته احتياطي
+        pip install nose
+        nosetests -v
 
 ---
 apiVersion: tekton.dev/v1
@@ -129,6 +133,8 @@ spec:
         set -e
         oc project $(params.namespace)
 
+        echo "Deploying $(params.app) with image $(params.image) on port $(params.port)"
+
         oc apply -f - <<EOF
         apiVersion: apps/v1
         kind: Deployment
@@ -167,5 +173,6 @@ spec:
         EOF
 
         oc expose svc/$(params.app) || true
-        oc rollout status deployment/$(params.app) -n $(params.namespace) --timeout=180s
-        oc get route $(params.app) -n $(params.namespace) -o jsonpath='{.spec.host}{"\n"}'
+        oc rollout status deployment/$(params.app) --timeout=180s
+        echo "Route:"
+        oc get route $(params.app) -o jsonpath='{.spec.host}{"\n"}'
