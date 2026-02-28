@@ -1,49 +1,53 @@
-apiVersion: tekton.dev/v1
+---
+apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
   name: cleanup
 spec:
   workspaces:
     - name: source
+      description: Workspace shared by all tasks
   steps:
     - name: cleanup
-      image: alpine:3.20
+      image: alpine:3.19
       workingDir: $(workspaces.source.path)
       script: |
         #!/bin/sh
         set -e
         echo "Cleaning workspace..."
         rm -rf ./* ./.??* || true
-        echo "Cleanup done."
+        echo "Done."
 
 ---
-apiVersion: tekton.dev/v1
+apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
   name: git-clone
 spec:
   params:
-    - name: url
+    - name: repoUrl
       type: string
     - name: revision
       type: string
       default: main
   workspaces:
-    - name: source
+    - name: output
   steps:
-    - name: git-clone
+    - name: clone
       image: alpine/git:2.45.2
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.output.path)
       script: |
         #!/bin/sh
         set -e
-        echo "Cloning repo..."
-        git clone $(params.url) .
+        echo "Cloning $(params.repoUrl) @ $(params.revision)"
+        rm -rf repo
+        git clone $(params.repoUrl) repo
+        cd repo
         git checkout $(params.revision)
-        echo "Clone complete."
+        echo "Repo ready at $(workspaces.output.path)/repo"
 
 ---
-apiVersion: tekton.dev/v1
+apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
   name: flake8
@@ -51,19 +55,20 @@ spec:
   workspaces:
     - name: source
   steps:
-    - name: flake8
+    - name: lint
       image: python:3.9-slim
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.source.path)/repo
       script: |
         #!/bin/sh
         set -e
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install flake8
-        flake8 . --max-line-length=120
+        echo "Running flake8..."
+        flake8 service --count --statistics
 
 ---
-apiVersion: tekton.dev/v1
+apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
   name: nose
@@ -71,20 +76,19 @@ spec:
   workspaces:
     - name: source
   steps:
-    - name: nose
+    - name: test
       image: python:3.9-slim
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.source.path)/repo
       script: |
         #!/bin/sh
         set -e
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        # nose موجود في requirements.txt، بس بنثبته احتياطي
-        pip install nose
+        echo "Running nose tests..."
         nosetests -v
 
 ---
-apiVersion: tekton.dev/v1
+apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
   name: buildah
@@ -98,19 +102,21 @@ spec:
   workspaces:
     - name: source
   steps:
-    - name: buildah
-      image: quay.io/buildah/stable:v1.36.0
+    - name: build-and-push
+      image: quay.io/buildah/stable:v1.35.0
       securityContext:
         privileged: true
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.source.path)/repo
       script: |
         #!/bin/sh
         set -e
-        buildah bud --tls-verify=$(params.tlsVerify) -t $(params.image) -f Dockerfile .
-        buildah push --tls-verify=$(params.tlsVerify) $(params.image) docker://$(params.image)
+        echo "Building image: $(params.image)"
+        buildah bud --tls-verify=$(params.tlsVerify) -t $(params.image) .
+        echo "Pushing image: $(params.image)"
+        buildah push --tls-verify=$(params.tlsVerify) $(params.image)
 
 ---
-apiVersion: tekton.dev/v1
+apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
   name: openshift-client
@@ -131,48 +137,25 @@ spec:
       script: |
         #!/bin/sh
         set -e
+        echo "Switching to project $(params.namespace)"
         oc project $(params.namespace)
 
-        echo "Deploying $(params.app) with image $(params.image) on port $(params.port)"
+        echo "Deploying app $(params.app) with image $(params.image)"
+        if oc get deployment/$(params.app) >/dev/null 2>&1; then
+          oc set image deployment/$(params.app) $(params.app)=$(params.image)
+        else
+          oc new-app --name=$(params.app) $(params.image)
+        fi
 
-        oc apply -f - <<EOF
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: $(params.app)
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: $(params.app)
-          template:
-            metadata:
-              labels:
-                app: $(params.app)
-            spec:
-              containers:
-              - name: $(params.app)
-                image: $(params.image)
-                env:
-                - name: PORT
-                  value: "$(params.port)"
-                ports:
-                - containerPort: $(params.port)
-        ---
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: $(params.app)
-        spec:
-          selector:
-            app: $(params.app)
-          ports:
-          - name: http
-            port: 80
-            targetPort: $(params.port)
-        EOF
+        echo "Ensuring service exists on port $(params.port)"
+        if ! oc get svc/$(params.app) >/dev/null 2>&1; then
+          oc expose deployment/$(params.app) --port=$(params.port) --name=$(params.app)
+        fi
 
-        oc expose svc/$(params.app) || true
+        echo "Ensuring route exists"
+        if ! oc get route/$(params.app) >/dev/null 2>&1; then
+          oc expose svc/$(params.app) --name=$(params.app)
+        fi
+
+        echo "Waiting for rollout..."
         oc rollout status deployment/$(params.app) --timeout=180s
-        echo "Route:"
-        oc get route $(params.app) -o jsonpath='{.spec.host}{"\n"}'

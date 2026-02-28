@@ -1,4 +1,4 @@
-apiVersion: tekton.dev/v1
+apiVersion: tekton.dev/v1beta1
 kind: Pipeline
 metadata:
   name: ci-cd-final-project-pipeline
@@ -13,12 +13,11 @@ spec:
       type: string
     - name: app
       type: string
-      default: ci-cd-final-project
-    - name: image
-      type: string
     - name: port
       type: string
       default: "8000"
+    - name: image
+      type: string
 
   workspaces:
     - name: shared-workspace
@@ -36,12 +35,12 @@ spec:
       taskRef:
         name: git-clone
       params:
-        - name: url
+        - name: repoUrl
           value: $(params.repoUrl)
         - name: revision
           value: $(params.revision)
       workspaces:
-        - name: source
+        - name: output
           workspace: shared-workspace
 
     - name: flake8
@@ -67,8 +66,6 @@ spec:
       params:
         - name: image
           value: $(params.image)
-        - name: tlsVerify
-          value: "false"
       workspaces:
         - name: source
           workspace: shared-workspace
