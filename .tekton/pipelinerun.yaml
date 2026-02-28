@@ -16,15 +16,11 @@ spec:
     - name: app
       value: "ci-cd-final-project"
     - name: port
-      value: "8080"
+      value: "8000"
     - name: image
-      value: "image-registry.openshift-image-registry.svc:5000/REPLACE_WITH_YOUR_NAMESPACE/ci-cd-final-project:latest"
+      value: "image-registry.openshift-image-registry.svc:5000/sn-labs-eslamalfi2/ci-cd-final-project:latest"
 
   workspaces:
     - name: shared-workspace
-      volumeClaimTemplate:
-        spec:
-          accessModes: ["ReadWriteOnce"]
-          resources:
-            requests:
-              storage: 1Gi
+      persistentVolumeClaim:
+        claimName: ci-cd-pvc
