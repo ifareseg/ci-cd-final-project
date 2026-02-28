@@ -41,8 +41,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pip install pytest
-          pytest -q
+          nosetests -v --with-spec --spec-color
 
   docker-image:
     name: Build & Push Image (main only)
